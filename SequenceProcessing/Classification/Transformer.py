@@ -323,95 +323,103 @@ class Transformer(ComputationalGraph):
         ln_size = [0, 0, 0, 0]
         random_generator = random.Random(parameter.getSeed())
 
-        # Encoder Block
+        # Encoder Stack (num_layers x)
         input1 = MultiplicationNode(False, True)
         self.input_nodes.append(input1)
 
-        concatenated_node1 = self.concatEdges(
-            self.multiHeadAttention(input1, parameter, False, random_generator),
-            1
-        )
-        we = MultiplicationNode(
-            Tensor(
-                parameter.initializeWeights(parameter.getL(), parameter.getL(), random_generator),
-                (parameter.getL(), parameter.getL())
+        current_enc = input1
+        for _ in range(parameter.getNumLayers()):
+            concatenated_enc = self.concatEdges(
+                self.multiHeadAttention(current_enc, parameter, False, random_generator),
+                1
             )
-        )
-        c1 = self.addEdge(concatenated_node1, we)
-        input_c1 = self.addAdditionEdge(input1, c1, False)
-        y1 = self.layerNormalization(input_c1, parameter, True, ln_size)
-        oe = self.addAdditionEdge(
-            self.feedforwardNeuralNetwork(y1, parameter.getL(), parameter, random_generator, True),
-            y1,
-            False
-        )
-        encoder = self.layerNormalization(oe, parameter, True, ln_size)
+            we = MultiplicationNode(
+                Tensor(
+                    parameter.initializeWeights(parameter.getL(), parameter.getL(), random_generator),
+                    (parameter.getL(), parameter.getL())
+                )
+            )
+            c_enc = self.addEdge(concatenated_enc, we)
+            input_c_enc = self.addAdditionEdge(current_enc, c_enc, False)
+            y_enc = self.layerNormalization(input_c_enc, parameter, True, ln_size)
+            oe = self.addAdditionEdge(
+                self.feedforwardNeuralNetwork(y_enc, parameter.getL(), parameter, random_generator, True),
+                y_enc,
+                False
+            )
+            current_enc = self.layerNormalization(oe, parameter, True, ln_size)
 
-        # Decoder Block
+        encoder = current_enc
+
+        # Decoder Stack (num_layers x)
         input2 = MultiplicationNode(False, True)
         self.input_nodes.append(input2)
 
-        concatenated_node2 = self.concatEdges(
-            self.multiHeadAttention(input2, parameter, True, random_generator),
-            1
-        )
-        wd1 = MultiplicationNode(
-            Tensor(
-                parameter.initializeWeights(parameter.getL(), parameter.getL(), random_generator),
-                (parameter.getL(), parameter.getL())
+        current_dec = input2
+        for _ in range(parameter.getNumLayers()):
+            # Masked self-attention
+            concatenated_dec = self.concatEdges(
+                self.multiHeadAttention(current_dec, parameter, True, random_generator),
+                1
             )
-        )
-        c2 = self.addEdge(concatenated_node2, wd1)
-        input_c2 = self.addAdditionEdge(input2, c2, False)
-        cd2 = self.layerNormalization(input_c2, parameter, False, ln_size)
-
-        nodes = []
-
-        for _ in range(parameter.getN()):
-            wk = MultiplicationNode(
+            wd1 = MultiplicationNode(
                 Tensor(
-                    parameter.initializeWeights(parameter.getL(), parameter.getDk(), random_generator),
-                    (parameter.getL(), parameter.getDk())
+                    parameter.initializeWeights(parameter.getL(), parameter.getL(), random_generator),
+                    (parameter.getL(), parameter.getL())
                 )
             )
-            k = self.addEdge(encoder, wk)
+            c_dec = self.addEdge(concatenated_dec, wd1)
+            input_c_dec = self.addAdditionEdge(current_dec, c_dec, False)
+            cd = self.layerNormalization(input_c_dec, parameter, False, ln_size)
 
-            wq = MultiplicationNode(
+            # Cross-attention: Q from decoder, K and V from encoder
+            cross_nodes = []
+            for _head in range(parameter.getN()):
+                wk = MultiplicationNode(
+                    Tensor(
+                        parameter.initializeWeights(parameter.getL(), parameter.getDk(), random_generator),
+                        (parameter.getL(), parameter.getDk())
+                    )
+                )
+                k = self.addEdge(encoder, wk)
+
+                wq = MultiplicationNode(
+                    Tensor(
+                        parameter.initializeWeights(parameter.getL(), parameter.getDk(), random_generator),
+                        (parameter.getL(), parameter.getDk())
+                    )
+                )
+                q = self.addEdge(cd, wq)
+
+                wv = MultiplicationNode(
+                    Tensor(
+                        parameter.initializeWeights(parameter.getL(), parameter.getDk(), random_generator),
+                        (parameter.getL(), parameter.getDk())
+                    )
+                )
+                v = self.addEdge(encoder, wv)
+
+                k_transpose = self.addEdge(k, Transpose())
+                qk = self.addEdge(q, k_transpose, False, False)
+                qk_dk = self.addEdge(qk, MultiplyByConstant(1.0 / math.sqrt(parameter.getDk())))
+                s_qk_dk = self.addEdge(qk_dk, Softmax())
+                attention = self.addEdge(s_qk_dk, v)
+                cross_nodes.append(attention)
+
+            cross_concat = self.concatEdges(cross_nodes, 1)
+            wd2 = MultiplicationNode(
                 Tensor(
-                    parameter.initializeWeights(parameter.getL(), parameter.getDk(), random_generator),
-                    (parameter.getL(), parameter.getDk())
+                    parameter.initializeWeights(parameter.getL(), parameter.getL(), random_generator),
+                    (parameter.getL(), parameter.getL())
                 )
             )
-            q = self.addEdge(cd2, wq)
+            cd_cross = self.addEdge(cross_concat, wd2)
+            cd_cross_cd = self.addAdditionEdge(cd, cd_cross, False)
+            yd = self.layerNormalization(cd_cross_cd, parameter, False, ln_size)
 
-            wv = MultiplicationNode(
-                Tensor(
-                    parameter.initializeWeights(parameter.getL(), parameter.getDk(), random_generator),
-                    (parameter.getL(), parameter.getDk())
-                )
-            )
-            v = self.addEdge(encoder, wv)
-
-            k_transpose = self.addEdge(k, Transpose())
-            qk = self.addEdge(q, k_transpose, False, False)
-            qk_dk = self.addEdge(qk, MultiplyByConstant(1.0 / math.sqrt(parameter.getDk())))
-            s_qk_dk = self.addEdge(qk_dk, Softmax())
-            attention = self.addEdge(s_qk_dk, v)
-            nodes.append(attention)
-
-        concatenated_node3 = self.concatEdges(nodes, 1)
-        wd2 = MultiplicationNode(
-            Tensor(
-                parameter.initializeWeights(parameter.getL(), parameter.getL(), random_generator),
-                (parameter.getL(), parameter.getL())
-            )
-        )
-        cd3 = self.addEdge(concatenated_node3, wd2)
-        cd3_cd2 = self.addAdditionEdge(cd2, cd3, False)
-        yd1 = self.layerNormalization(cd3_cd2, parameter, False, ln_size)
-        od = self.feedforwardNeuralNetwork(yd1, parameter.getL(), parameter, random_generator, False)
-        oy = self.addAdditionEdge(od, yd1, False)
-        d = self.layerNormalization(oy, parameter, False, ln_size)
+            od = self.feedforwardNeuralNetwork(yd, parameter.getL(), parameter, random_generator, False)
+            oy = self.addAdditionEdge(od, yd, False)
+            current_dec = self.layerNormalization(oy, parameter, False, ln_size)
 
         wdo = MultiplicationNode(
             Tensor(
@@ -419,7 +427,7 @@ class Transformer(ComputationalGraph):
                 (parameter.getL(), parameter.getV())
             )
         )
-        decoder = self.addEdge(d, wdo)
+        decoder = self.addEdge(current_dec, wdo)
         self.output_node = self.addEdge(decoder, Softmax())
 
         class_label_node = ComputationalNode()

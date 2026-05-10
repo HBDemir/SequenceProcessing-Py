@@ -14,6 +14,7 @@ class TransformerParameter(NeuralNetworkParameter):
     __L: int
     __N: int
     __V: int
+    __num_layers: int
     __epsilon: float
 
     __input_hidden_layers: List[int]
@@ -45,7 +46,8 @@ class TransformerParameter(NeuralNetworkParameter):
                  gamma_input_values: List[float],
                  gamma_output_values: List[float],
                  beta_input_values: List[float],
-                 beta_output_values: List[float]):
+                 beta_output_values: List[float],
+                 num_layers: int = 1):
         """
         Constructor for TransformerParameter.
 
@@ -66,12 +68,14 @@ class TransformerParameter(NeuralNetworkParameter):
         :param gamma_output_values: Gamma values (output normalization).
         :param beta_input_values: Beta values (input normalization).
         :param beta_output_values: Beta values (output normalization).
+        :param num_layers: Number of stacked encoder/decoder layers (default 1).
         """
         super().__init__(seed, epoch, optimizer, initialization, loss, 0.0, 1)
 
         self.__L = word_embedding_length + 1
         self.__N = multi_head_attention_length
         self.__V = vocabulary_length
+        self.__num_layers = num_layers
         self.__epsilon = epsilon
 
         self.__input_hidden_layers = input_hidden_layers
@@ -109,6 +113,12 @@ class TransformerParameter(NeuralNetworkParameter):
         Returns beta output value at index.
         """
         return self.__beta_output_values[index]
+
+    def getNumLayers(self) -> int:
+        """
+        Returns number of stacked encoder/decoder layers.
+        """
+        return self.__num_layers
 
     def getEpsilon(self) -> float:
         """
